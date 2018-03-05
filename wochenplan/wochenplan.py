@@ -20,6 +20,9 @@ allergens = 'ABCDEFGHLMNOPR'
 
 days = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag']
 
+class Data:
+    pass
+
 class Meal:
     def __init__(self, name, alls=None):
         self.name = name
@@ -54,7 +57,7 @@ class Menu:
         return pretty
 
     def add_day(self, day, meals:"list of meals"):
-        if not day in days:
+        if day not in days:
             raise ValueError('Unknown day: %r' % day)
         if day in self.days:
             raise ValueError('Day already set: %r' % day)
@@ -67,30 +70,81 @@ class Menu:
     def get_day(self, day):
         return self.days[day]
 
+class ParseError(Exception):
+    pass
 
 def parse_fail(txt):
-    print('%d:%d: parsing failed: %s' % (rownum, colnum, txt))
-    sys.exit(2)
+    raise ParseError('%d:%d: parsing failed: %s' % (rownum, colnum, txt))
 
-header = tree.find('body/p')
+def extract_timespan(tree):
+    """Extract start and end date from ElementTree"""
 
-header = ''.join(header.itertext()).translate(str.maketrans('\n', ' ', '\t'))
+    header = tree.find('body/p')
 
-m = re.search('vom (\d{,2}.\d{,2}.) bis (\d{,2}.\d{,2}.) (\d{4})', header)
+    header = ''.join(header.itertext()).translate(str.maketrans('\n', ' ', '\t'))
 
-if m:
-    start = m.group(1)
-    end = m.group(2)
-    year = m.group(3)
+    m = re.search('vom (\d{,2}.\d{,2}.) bis (\d{,2}.\d{,2}.) (\d{4})', header)
 
-    start_date = datetime.strptime('%s%s' % (start, year), '%d.%m.%Y').date()
-    end_date = datetime.strptime('%s%s' % (end, year), '%d.%m.%Y').date()
-else:
-    parse_fail('document header: %r' % header)
+    if m:
+        start = m.group(1)
+        end = m.group(2)
+        year = m.group(3)
+
+        start_date = datetime.strptime('%s%s' % (start, year), '%d.%m.%Y').date()
+        end_date = datetime.strptime('%s%s' % (end, year), '%d.%m.%Y').date()
+
+        return (start_date, end_date)
+    else:
+        parse_fail('document header: %r' % header)
+
+def parse_menu_header(text):
+    """Return new, empty Menu() from description"""
+
+    m = re.search('^Menü (\d+) um € (\d+,\d{2})$', text)
+
+    if m:
+        menu_number = m.group(1)
+        if int(menu_number) != rownum / 3 + 1:
+            parse_fail('menu/row desync, menu = %d, rownum = %d' % (menu_number, rownum))
+
+        # price in cents
+        price = int(100 * float(m.group(2).replace(',', '.')))
+        if price % 10 != 0:
+            parse_fail('weird price: %d' % price)
+
+        return Menu(menu_number, price)
+    else:
+        parse_fail('menu header: %r' % text)
+
+def parse_day_menu(text):
+    """Return list of Meal() for one day"""
+
+    items = [item.strip() for item in text.split('****')]
+    if len(items) != 2:
+        parse_fail('not two courses: %r' % items)
+
+    meals = []
+    for num, item in enumerate(items):
+        # group 1: name of meal, group 2: allergens
+        item_regex = re.compile('^(.*?) +\(([%s]+)\)$' % allergens)
+        m = re.search(item_regex, item)
+        if m:
+            meals.append(Meal(
+                re.sub(' +', ' ', m.group(1)),
+                m.group(2)
+            ))
+        else:
+            parse_fail('menu item: %r' % item)
+
+    return meals
+
+data = Data()
+
+(data.start, data.end) = extract_timespan(tree)
 
 tab = tree.find('.//table')
 
-menus = []
+data.menus = []
 
 for rownum, row in enumerate(tab.iter('tr')):
     rowtype = rownum % 3
@@ -102,50 +156,22 @@ for rownum, row in enumerate(tab.iter('tr')):
 
         # menu header
         if rowtype == 0:
-            m = re.search('^Menü (\d+) um € (\d+,\d{2})$', text)
-            if m:
-                menu_number = m.group(1)
-                if int(menu_number) != rownum / 3 + 1:
-                    parse_fail('menu/row desync, menu = %d, rownum = %d' % (menu_number, rownum))
-
-                # price in cents
-                price = int(100 * float(m.group(2).replace(',', '.')))
-                if price % 10 != 0:
-                    parse_fail('weird price: %d' % price)
-
-                current_menu = Menu(menu_number, price)
-                menus.append(current_menu)
-            else:
-                parse_fail('menu header: %r' % text)
-        # days
+            current_menu = parse_menu_header(text)
+            data.menus.append(current_menu)
+        # day
         elif rowtype == 1:
             if not text == days[colnum]:
                 parse_fail('wrong day: is %r, should be %r' % (text, days[colnum]))
-        # food items
+        # courses for one day
         elif rowtype == 2:
-            items = [item.strip() for item in text.split('****')]
-            if len(items) != 2:
-                parse_fail('not two menus: %r' % items)
-
-            meals = []
-            for num, item in enumerate(items):
-                # group 1: name of meal, group 2: allergens
-                item_regex = re.compile('^(.*?) +\(([%s]+)\)$' % allergens)
-                m = re.search(item_regex, item)
-                if m:
-                    meals.append(Meal(
-                        re.sub(' +', ' ', m.group(1)),
-                        m.group(2)
-                    ))
-                else:
-                    parse_fail('menu item: %r' % item)
+            meals = parse_day_menu(text)
 
             current_menu.add_day(days[colnum], meals)
 
 for day in days:
     soups = [
         menu.get_day(day)[0].name
-        for menu in menus
+        for menu in data.menus
     ]
 
     if not len(set(soups)) == 1:
@@ -162,14 +188,14 @@ class CustomEncoder(json.JSONEncoder):
 
         return super().default(obj)
 
-print('Plan vom %s bis %s\n' % (start_date, end_date))
+print('Plan vom %s bis %s\n' % (data.start, data.end))
 
 for day in days:
-    soup = menus[0].get_day(day)[0]
+    soup = data.menus[0].get_day(day)[0]
 
     outstr = '%s\nSuppe: %s\n' % (day, soup)
 
-    for menu in menus:
+    for menu in data.menus:
         meal = menu.get_day(day)[1]
         outstr += 'Menü %s (%.2f€): %s\n' % (menu.name, menu.price / 100, meal)
 
