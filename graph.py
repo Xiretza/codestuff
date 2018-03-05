@@ -1,17 +1,31 @@
 #!/usr/bin/env python
 import math
+import statistics
+
+use_morse = True
 
 columns = 160
 rows = 40
 
-omega = 1
+omega = 0.1
+offset = 0
 
-vals = [math.cos(0.06 * i) for i in range(columns)]
-#vals = [math.cos(omega * i) for i in range(columns)]
+#vals = [1 - math.exp(omega * -i) for i in range(columns)]
+vals = [math.cos(omega * i) for i in range(columns)]
+#vals = [(i%2) for i in range(math.floor(columns/10))]
+#vals = [math.sqrt((1 - (omega * i)**2)) for i in range(columns)]
 
 maxval = max(vals)
 minval = min(vals)
 
+# returns numbers from start to end, inclusive
+def fromto(start, end):
+    if start < end:
+        return range(start, end+1)
+    else:
+        return range(start, end-1, -1)
+
+# takes array of 4 rows with 2 truthy/falsy columns each
 def matrix_to_braille(matrix):
     codepoint = 0x2800
     for x, row in enumerate(matrix):
@@ -20,12 +34,133 @@ def matrix_to_braille(matrix):
 
     return chr(codepoint)
 
+class Coord:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+
+    def __str__(self):
+        return "(%d, %d)" % (self.x, self.y)
+
+    def get_cart(self):
+        return (self.x, self.y)
+
+    def get_polar(self):
+        mag = math.sqrt(sum(self.get_cart() ** 2))
+        phi = math.atan(self.y / self.x)
+        return (mag, phi)
+
+class Matrix:
+    def __init__(self, w, h, fill):
+        self.w = w
+        self.h = h
+        self._data = [[fill] * w for y in range(h)]
+    
+    def set_coord(self, x, y, val):
+        #print("set %s to %d" % (Coord(x, y), val))
+        self._data[y][x] = val
+
+    def get_coord(self, x, y):
+        return self._data[y][x]
+
+    def get_row(self, y):
+        return self._data[y]
+    
+    # [row] generator
+    def rows(self):
+        return self._data
+
+    # (Coord, point) generator
+    def points(self):
+        for x in range(self.w):
+            for y in range(self.h):
+                yield (Coord(x, y), self.get_coord(x, y))
+    
+    def extract(self, start, end):
+        #start = Coord(min(_start.x, _end.x), min(_start.y, _end.y))
+        #end = Coord(max(_start.x, _end.x), max(_start.y, _end.y))
+        
+        #print("extract from %s to %s" % (start, end))
+
+        #diffx = end.x-start.x
+        #diffy = end.y-start.y
+
+        #new_matrix = Matrix(diffx+1, diffy+1, 0)
+
+        for x in fromto(start.x, end.x):
+            for y in fromto(start.y, end.y):
+                #new_matrix.set_coord(x - start.x, y - start.y, self.get_coord(x, y))
+                yield self.get_coord(x, y)
+
+    def draw_line(self, start, end):
+        diffx = end.x-start.x
+        diffy = end.y-start.y
+
+        if diffx != 0:
+            for x in fromto(start.x, end.x):
+                self.set_coord(x, math.floor(start.y + (x-start.x) * diffy/diffx + 0.5), 255)
+ 
+        if diffy != 0:
+            for y in fromto(start.y, end.y):
+                self.set_coord(math.floor(start.x + (y-start.y) * diffx/diffy + 0.5), y, 255)
+
+    def render(self, ren):
+        ren.draw(self)
+
+    def scale(self, new_w, new_h):
+        new_matrix = Matrix(new_w, new_h, 0)
+
+        factor_w = self.w/new_w
+        factor_h = self.h/new_h
+
+        for y in range(new_h):
+            for x in range(new_w):
+                extracted = self.extract(
+                    Coord(
+                        math.floor(factor_w * x + 0.5),
+                        math.floor(factor_h * y + 0.5)
+                    ),
+                    Coord(
+                        math.floor(factor_w * (x+1) - 0.5),
+                        math.floor(factor_h * (y+1) - 0.5)
+                    )
+                )
+
+                avg = statistics.mean(extracted)
+
+                #if avg > 0: print("avg: %d" % avg)
+
+                new_matrix.set_coord(x, y, avg)
+
+        return new_matrix
+
+class MatrixRender:
+    def __init__():
+        self.matrix = matrix
+
+    def draw(self, matrix):
+        print("dummy matrix draw")
+
+class RenderConsole(MatrixRender):
+    def __init__(self, w, h):
+        self.w = w
+        self.h = h
+
+    def draw(self, matrix):
+        self.matrix = matrix.scale(self.w, self.h)
+        for row in reversed(self.matrix.rows()):
+            print("".join([
+                [" ", "-", "o", "x"][max(min(math.floor(p/40), 3), 0)]
+                #"x" if p else " "
+                for p in row
+            ]))
+
 pattern_one = matrix_to_braille(((1,0), (0,1), (1,0), (0,1)))
 pattern_two = matrix_to_braille(((0,1), (1,0), (0,1), (1,0)))
 
-for i in range(5):
-    print(pattern_one * 10)
-    print(pattern_two * 10)
+#for i in range(5):
+#    print(pattern_one * 10)
+#    print(pattern_two * 10)
 
 # convert to pixel coordinates
 vals = [
@@ -33,26 +168,22 @@ vals = [
         for n in vals
     ]
 
-matrix = [[" "] * columns for x in range(rows)]
+matrix = Matrix(300, 100, 0)
 
 for col, val in enumerate(vals):
-    matrix[val][col] = "x"
-
-    # get previous and next columns' values
+    # get previous column's value
     prevval = vals[col - 1] if col != 0 else val
-    nextval = vals[col + 1] if col != len(vals)-1 else val
 
-    # switch them around so that prev isn't larger than next (for range() and rounding)
-    if prevval > nextval:
-        prevval, nextval = nextval, prevval
+    matrix.draw_line(Coord(col-1, prevval), Coord(col, val))
 
-    # calculate the average value between current and prev/next column's value
-    prevavg = math.floor((val+prevval)/2 + 0.5)
-    nextavg = math.floor((val+nextval)/2 + 0.5)
+c1 = Coord(50, 30)
+c2 = Coord(100, 35)
 
-    # fill in the lines
-    for n in range(prevavg, nextavg):
-        matrix[n][col] = "x"
+matrix.draw_line(c1, c2)
 
-for row in reversed(matrix):
-    print("".join(row))
+render = RenderConsole(columns, rows)
+
+matrix.render(render)
+
+#for row in reversed(matrix.rows()):
+#    print("".join(row))
