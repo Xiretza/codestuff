@@ -1,10 +1,18 @@
+#!/usr/bin/env python
+
 import xml.etree.ElementTree as ET
 import sys
 import re
 import json
+import argparse
 from datetime import datetime, date
 
-filename = 'wochenplan.html'
+parser = argparse.ArgumentParser(description='Mensa-Wochenplan parsen')
+
+parser.add_argument('file', type=argparse.FileType('r'))
+args = parser.parse_args()
+
+tree = ET.parse(args.file)
 
 num_menus = 3
 
@@ -64,8 +72,7 @@ def parse_fail(txt):
     print('%d:%d: parsing failed: %s' % (rownum, colnum, txt))
     sys.exit(2)
 
-root = ET.parse(filename)
-header = root.find('body/p')
+header = tree.find('body/p')
 
 header = ''.join(header.itertext()).translate(str.maketrans('\n', ' ', '\t'))
 
@@ -81,7 +88,7 @@ if m:
 else:
     parse_fail('document header: %r' % header)
 
-tab = root.find('.//table')
+tab = tree.find('.//table')
 
 menus = []
 
@@ -154,6 +161,8 @@ class CustomEncoder(json.JSONEncoder):
             return {'__kind': 'Meal', 'name': obj.name, 'allergens': obj.allergens}
 
         return super().default(obj)
+
+print('Plan vom %s bis %s\n' % (start_date, end_date))
 
 for day in days:
     soup = menus[0].get_day(day)[0]
