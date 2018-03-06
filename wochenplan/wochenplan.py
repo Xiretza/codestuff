@@ -1,43 +1,37 @@
 #!/usr/bin/env python
 
-import xml.etree.ElementTree as ET
-import sys
-import re
-import json
 import argparse
 from datetime import datetime, date
-
-parser = argparse.ArgumentParser(description='Mensa-Wochenplan parsen')
-
-parser.add_argument('file', type=argparse.FileType('r'))
-args = parser.parse_args()
-
-tree = ET.parse(args.file)
+import json
+import re
+import sys
+import textwrap
+import xml.etree.ElementTree as ET
 
 num_menus = 3
 
-allergens = 'ABCDEFGHLMNOPR'
+allergens = {
+        'A': 'Gluten',
+        'B': 'Krebstiere',
+        'C': 'Eier',
+        'D': 'Fisch',
+        'E': 'Erdnüsse',
+        'F': 'Soja',
+        'G': 'Milch',
+        'H': 'Schalenfrüchte',
+        'L': 'Sellerie',
+        'M': 'Senf',
+        'N': 'Sesam',
+        'O': 'Schwefeldioxid',
+        'P': 'Lupinien',
+        'R': 'Weichtiere'
+    }
 
 days = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag']
 
-class Data:
-    pass
-
-class Meal:
-    def __init__(self, name, alls=None):
-        self.name = name
-        if not alls:
-            alls = ''
-        for c in alls:
-            if c not in allergens:
-                raise ValueError('Unknown allergen: %r' % c)
-        self.allergens = alls
-
-    def __str__(self):
-        return '%s (%s)' % (self.name, self.allergens)
-
-    def __repr__(self):
-        return '%s(%r, %r)' % (self.__name__, self.name, self.allergens)
+class Plan:
+    def __init__(self):
+        self.menus = []
 
 class Menu:
     def __init__(self, name, price):
@@ -69,6 +63,35 @@ class Menu:
 
     def get_day(self, day):
         return self.days[day]
+
+class Meal:
+    def __init__(self, name, alls=None):
+        self.name = name
+        if not alls:
+            alls = ''
+        for c in alls:
+            if c not in allergens:
+                raise ValueError('Unknown allergen: %r' % c)
+        self.allergens = alls
+
+    def __str__(self):
+        return '%s (%s)' % (self.name, self.allergens)
+
+    def __repr__(self):
+        return '%s(%r, %r)' % (self.__name__, self.name, self.allergens)
+
+class CustomEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, date):
+            return obj.isoformat()
+        elif isinstance(obj, Plan):
+            return {'__kind': 'Plan', 'start_date': obj.start_date, 'end_date': obj.end_date, 'menus': obj.menus}
+        elif isinstance(obj, Menu):
+            return {'__kind': 'Menu', 'name': obj.name, 'price': obj.price, 'days': obj.days}
+        elif isinstance(obj, Meal):
+            return {'__kind': 'Meal', 'name': obj.name, 'allergens': obj.allergens}
+
+        return super().default(obj)
 
 class ParseError(Exception):
     pass
@@ -138,13 +161,50 @@ def parse_day_menu(text):
 
     return meals
 
-data = Data()
+def output(what):
+    args.outfile.write('%s\n' % what)
 
-(data.start, data.end) = extract_timespan(tree)
+def output_table(data):
+    output('Plan vom %s bis %s\n' % (data.start_date, data.end_date))
+    
+    for day in days:
+        soup = data.menus[0].get_day(day)[0]
+    
+        outstr = '%s\nSuppe: %s\n' % (day, soup)
+    
+        for menu in data.menus:
+            meal = menu.get_day(day)[1]
+            outstr += 'Menü %s (%.2f€): %s\n' % (menu.name, menu.price / 100, meal)
+    
+        output(outstr)
+
+    output(', '.join([' = '.join(ag) for ag in allergens.items()]))
+
+def output_json(data):
+    output(json.dumps(data, cls=CustomEncoder, indent=2))
+
+def output_csv(data):
+    pass
+
+parser = argparse.ArgumentParser(description='Mensa-Wochenplan parsen')
+
+parser.add_argument('infile', type=argparse.FileType('r'), help='the HTML file to be parsed (specify - for stdin)')
+parser.add_argument('-o', '--outfile', type=argparse.FileType('w'), default=sys.stdout, help='output to file (instead of stdout)')
+
+outopts = parser.add_mutually_exclusive_group(required=True)
+outopts.add_argument('-t', '--table', action='store_const', dest='outfunction', const=output_table, help='output a nice table')
+outopts.add_argument('-j', '--json', action='store_const', dest='outfunction', const=output_json, help='output as JSON')
+outopts.add_argument('-c', '--csv', action='store_const', dest='outfunction', const=output_csv, help='output as CSV')
+
+args = parser.parse_args()
+
+tree = ET.parse(args.infile)
+
+plan = Plan()
+
+(plan.start_date, plan.end_date) = extract_timespan(tree)
 
 tab = tree.find('.//table')
-
-data.menus = []
 
 for rownum, row in enumerate(tab.iter('tr')):
     rowtype = rownum % 3
@@ -157,7 +217,7 @@ for rownum, row in enumerate(tab.iter('tr')):
         # menu header
         if rowtype == 0:
             current_menu = parse_menu_header(text)
-            data.menus.append(current_menu)
+            plan.menus.append(current_menu)
         # day
         elif rowtype == 1:
             if not text == days[colnum]:
@@ -171,34 +231,12 @@ for rownum, row in enumerate(tab.iter('tr')):
 for day in days:
     soups = [
         menu.get_day(day)[0].name
-        for menu in data.menus
+        for menu in plan.menus
     ]
 
     if not len(set(soups)) == 1:
         parse_fail('soups not equal on %s: %r' % (day, soups))
 
-class CustomEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, date):
-            return obj.isoformat()
-        elif isinstance(obj, Menu):
-            return {'__kind': 'Menu', 'name': obj.name, 'price': obj.price, 'days': obj.days}
-        elif isinstance(obj, Meal):
-            return {'__kind': 'Meal', 'name': obj.name, 'allergens': obj.allergens}
-
-        return super().default(obj)
-
-print('Plan vom %s bis %s\n' % (data.start, data.end))
-
-for day in days:
-    soup = data.menus[0].get_day(day)[0]
-
-    outstr = '%s\nSuppe: %s\n' % (day, soup)
-
-    for menu in data.menus:
-        meal = menu.get_day(day)[1]
-        outstr += 'Menü %s (%.2f€): %s\n' % (menu.name, menu.price / 100, meal)
-
-    print(outstr)
+args.outfunction(plan)
 
 #print(json.dumps(menus, cls=CustomEncoder, indent=2))
