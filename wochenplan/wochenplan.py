@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 import argparse
-from datetime import datetime, date
+from datetime import timedelta, datetime, date
 import json
 import re
 import sys
@@ -161,29 +161,46 @@ def parse_day_menu(text):
 
     return meals
 
+def validate(plan):
+    if plan.end_date - plan.start_date != timedelta(days=4):
+        parse_fail('timespan is not a work-week: from %s to %s' % (plan.start_date, plan.end_date))
+
+    if plan.start_date.weekday() != 0:
+        parse_fail("plan doesn't start on Monday: %s" % plan.start_date)
+
+    for day in days:
+        soups = [
+            menu.get_day(day)[0].name
+            for menu in plan.menus
+        ]
+
+        if not len(set(soups)) == 1:
+            parse_fail('soups not equal on %s: %r' % (day, soups))
+
 def output(what):
     args.outfile.write('%s\n' % what)
 
-def output_table(data):
-    output('Plan vom %s bis %s\n' % (data.start_date, data.end_date))
-    
+def output_table(plan):
+    output('Plan vom %s bis %s\n' % (plan.start_date, plan.end_date))
+
     for day in days:
-        soup = data.menus[0].get_day(day)[0]
+        soup = plan.menus[0].get_day(day)[0]
     
         outstr = '%s\nSuppe: %s\n' % (day, soup)
     
-        for menu in data.menus:
+        for menu in plan.menus:
             meal = menu.get_day(day)[1]
             outstr += 'Menü %s (%.2f€): %s\n' % (menu.name, menu.price / 100, meal)
     
         output(outstr)
 
+    # list of allergens
     output(', '.join([' = '.join(ag) for ag in allergens.items()]))
 
-def output_json(data):
-    output(json.dumps(data, cls=CustomEncoder, indent=2))
+def output_json(plan):
+    output(json.dumps(plan, cls=CustomEncoder, indent=2))
 
-def output_csv(data):
+def output_csv(plan):
     pass
 
 parser = argparse.ArgumentParser(description='Mensa-Wochenplan parsen')
@@ -192,6 +209,7 @@ parser.add_argument('infile', type=argparse.FileType('r'), help='the HTML file t
 parser.add_argument('-o', '--outfile', type=argparse.FileType('w'), default=sys.stdout, help='output to file (instead of stdout)')
 
 outopts = parser.add_mutually_exclusive_group(required=True)
+outopts.add_argument('--validate', action='store_const', dest='outfunction', const=validate, help='no output, only validate')
 outopts.add_argument('-t', '--table', action='store_const', dest='outfunction', const=output_table, help='output a nice table')
 outopts.add_argument('-j', '--json', action='store_const', dest='outfunction', const=output_json, help='output as JSON')
 outopts.add_argument('-c', '--csv', action='store_const', dest='outfunction', const=output_csv, help='output as CSV')
@@ -228,14 +246,7 @@ for rownum, row in enumerate(tab.iter('tr')):
 
             current_menu.add_day(days[colnum], meals)
 
-for day in days:
-    soups = [
-        menu.get_day(day)[0].name
-        for menu in plan.menus
-    ]
-
-    if not len(set(soups)) == 1:
-        parse_fail('soups not equal on %s: %r' % (day, soups))
+validate(plan)
 
 args.outfunction(plan)
 
