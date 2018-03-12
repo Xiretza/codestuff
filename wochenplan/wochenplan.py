@@ -146,12 +146,17 @@ def parse_day_menu(text):
     meals = []
     for item in items:
         # group 1: name of meal, group 2: allergens
-        item_regex = re.compile(r'^(.*?) +\(([%s]+)\)$' % ALLERGENS)
+        item_regex = re.compile(r'^(.*?)(?: +\(([%s]+)\))?$' % ALLERGENS)
         m = re.search(item_regex, item)
         if m:
+            if not m.group(2):
+                # there are no allergens
+                allergens = ''
+            else:
+                allergens = m.group(2)
             meals.append(Meal(
                 re.sub(' +', ' ', m.group(1)),
-                m.group(2)
+                allergens
             ))
         else:
             raise ParseError('menu item', item)

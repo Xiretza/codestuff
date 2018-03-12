@@ -5,7 +5,6 @@ import json
 
 class CustomEncoder(json.JSONEncoder):
     def default(self, o): # pylint: disable=E0202
-        print('o is: %r (type %s)' % (o, type(o)))
         if isinstance(o, date):
             return o.isoformat()
         elif isinstance(o, wochenplan.Plan):
