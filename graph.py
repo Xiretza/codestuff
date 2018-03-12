@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 import math
+import numpy as np
 import statistics
 
-use_morse = True
+use_braille = True
 
 columns = 160
 rows = 40
@@ -54,14 +55,14 @@ class Matrix:
     def __init__(self, w, h, fill):
         self.w = w
         self.h = h
-        self._data = [[fill] * w for y in range(h)]
+        self._data = np.zeros((h, w))
     
     def set_coord(self, x, y, val):
         #print("set %s to %d" % (Coord(x, y), val))
-        self._data[y][x] = val
+        self._data[y, x] = val
 
     def get_coord(self, x, y):
-        return self._data[y][x]
+        return self._data[y, x]
 
     def get_row(self, y):
         return self._data[y]
@@ -72,13 +73,11 @@ class Matrix:
 
     # (Coord, point) generator
     def points(self):
-        for x in range(self.w):
-            for y in range(self.h):
-                yield (Coord(x, y), self.get_coord(x, y))
+        return self._data.flat
     
-    def extract(self, start, end):
-        #start = Coord(min(_start.x, _end.x), min(_start.y, _end.y))
-        #end = Coord(max(_start.x, _end.x), max(_start.y, _end.y))
+    def extract(self, _start, _end):
+        start = Coord(min(_start.x, _end.x), min(_start.y, _end.y))
+        end = Coord(max(_start.x, _end.x), max(_start.y, _end.y))
         
         #print("extract from %s to %s" % (start, end))
 
@@ -87,10 +86,7 @@ class Matrix:
 
         #new_matrix = Matrix(diffx+1, diffy+1, 0)
 
-        for x in fromto(start.x, end.x):
-            for y in fromto(start.y, end.y):
-                #new_matrix.set_coord(x - start.x, y - start.y, self.get_coord(x, y))
-                yield self.get_coord(x, y)
+        return self._data[start.y:end.y+1, start.x:end.x+1]
 
     def draw_line(self, start, end):
         diffx = end.x-start.x
@@ -126,7 +122,7 @@ class Matrix:
                     )
                 )
 
-                avg = statistics.mean(extracted)
+                avg = extracted.mean()
 
                 #if avg > 0: print("avg: %d" % avg)
 
