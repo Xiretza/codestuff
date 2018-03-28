@@ -6,7 +6,7 @@ import statistics
 use_braille = True
 
 columns = 160
-rows = 40
+rows = 50
 
 omega = 0.1
 offset = 0
@@ -52,7 +52,7 @@ class Coord:
         return (mag, phi)
 
 class Matrix:
-    def __init__(self, w, h, fill):
+    def __init__(self, w, h):
         self.w = w
         self.h = h
         self._data = np.zeros((h, w))
@@ -75,19 +75,6 @@ class Matrix:
     def points(self):
         return self._data.flat
     
-    def extract(self, _start, _end):
-        start = Coord(min(_start.x, _end.x), min(_start.y, _end.y))
-        end = Coord(max(_start.x, _end.x), max(_start.y, _end.y))
-        
-        #print("extract from %s to %s" % (start, end))
-
-        #diffx = end.x-start.x
-        #diffy = end.y-start.y
-
-        #new_matrix = Matrix(diffx+1, diffy+1, 0)
-
-        return self._data[start.y:end.y+1, start.x:end.x+1]
-
     def draw_line(self, start, end):
         diffx = end.x-start.x
         diffy = end.y-start.y
@@ -104,23 +91,23 @@ class Matrix:
         ren.draw(self)
 
     def scale(self, new_w, new_h):
-        new_matrix = Matrix(new_w, new_h, 0)
+        new_matrix = Matrix(new_w, new_h)
 
         factor_w = self.w/new_w
         factor_h = self.h/new_h
 
         for y in range(new_h):
             for x in range(new_w):
-                extracted = self.extract(
-                    Coord(
-                        math.floor(factor_w * x + 0.5),
-                        math.floor(factor_h * y + 0.5)
-                    ),
-                    Coord(
-                        math.floor(factor_w * (x+1) - 0.5),
-                        math.floor(factor_h * (y+1) - 0.5)
-                    )
-                )
+                start_x = math.floor(factor_w * x + 0.5)
+                end_x   = math.floor(factor_w * (x+1) + 0.5)
+
+                start_y = math.floor(factor_h * y + 0.5)
+                end_y   = math.floor(factor_h * (y+1) + 0.5)
+
+                extracted = self._data[
+                        start_y:end_y,
+                        start_x:end_x
+                    ]
 
                 avg = extracted.mean()
 
@@ -146,8 +133,8 @@ class RenderConsole(MatrixRender):
         self.matrix = matrix.scale(self.w, self.h)
         for row in reversed(self.matrix.rows()):
             print("".join([
-                [" ", "-", "o", "x"][max(min(math.floor(p/40), 3), 0)]
-                #"x" if p else " "
+                #[" ", "-", "o", "x"][max(min(math.floor(p/40), 3), 0)]
+                "x" if p else " "
                 for p in row
             ]))
 
@@ -164,7 +151,7 @@ vals = [
         for n in vals
     ]
 
-matrix = Matrix(300, 100, 0)
+matrix = Matrix(300, 100)
 
 for col, val in enumerate(vals):
     # get previous column's value
