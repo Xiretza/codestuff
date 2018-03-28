@@ -3,7 +3,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+// type of memory values
 #define CELL uint8_t
+// maximum depth of nested loops
 #define LDEPTH_MAX 100
 
 struct mem {
@@ -19,11 +21,6 @@ struct mem mem_pos;
 // cell -1 to neg_inf
 struct mem mem_neg;
 
-// current memory address
-int vp;
-// program counter
-int pc;
-
 // expands a mem and its size
 void expand_memory(struct mem *mem) {
 	mem->size++;
@@ -34,7 +31,7 @@ void expand_memory(struct mem *mem) {
 	mem->data[mem->size-1] = 0;
 }
 
-// takes a virtual address and returns a pointer to its value (allocates memory if necessary)
+// takes a bf memory address and returns a pointer to its value (allocates memory if necessary)
 CELL *conv_vp(int vp) {
 	if (vp < 0) {
 		// -1 -> 0
@@ -90,13 +87,19 @@ void main(int argc, char *argv[]) {
 		exit(EXIT_FAILURE);
 	}
 
-	vp = 0;
-	CELL *c = conv_vp(vp);
 	char inchar;
 	// used to find the end of a loop when skipping over the code inside
 	int seek_loop_end = 0;
+	// loop stack: contains the pc locations of `[`s, outer-most loop first
 	int lstack[LDEPTH_MAX];
+	// current loop depth: 0 = program body
 	int ldepth = 0;
+	// current memory address
+	int vp = 0;
+	// program counter
+	int pc = 0;
+
+	CELL *c = conv_vp(vp);
 
 	while (pc < prog_length) {
 		char ins = program[pc];
@@ -146,8 +149,10 @@ void main(int argc, char *argv[]) {
 				break;
 			case '[':
 				if (*c == 0) {
+					// start the seeking process
 					seek_loop_end = 1;
 				} else {
+					// push our location to the loop stack
 					if (ldepth >= LDEPTH_MAX - 2) {
 						fprintf(stderr, "Error: too many nested loops");
 						exit(EXIT_FAILURE);
