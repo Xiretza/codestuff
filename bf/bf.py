@@ -65,7 +65,7 @@ while pc < len(program):
         if memory.get(p, 0) == 0:
             seek_loop_end = 1
         else:
-            # push our the location of the [ to the loop stack for later backtracing
+            # push the location of the [ to the loop stack for later backtracking
             loops.append(pc - 1)
     elif c == ']':
         pc = loops.pop()
