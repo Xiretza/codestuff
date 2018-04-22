@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import requests
 import base64
 import json
@@ -71,7 +73,6 @@ class Period():
                 self.end-self.start, self.start.strftime('%H:%M'), self.end.strftime('%H:%M')))
 
         self.state = PeriodState(data['cellState'])
-        self.student_group = data['studentGroup']
 
         self.elements = ElementRegistry()
         for el in data['elements']:
@@ -129,21 +130,31 @@ class Timetable():
         """Return a sorted list of days"""
         return [self._days[d] for d in sorted(self._days)]
 
-def fetch_config(schoolname, element_type, date):
-    url = 'https://neilo.webuntis.com/WebUntis/api/public/timetable/weekly/pageconfig?type=%d&date=%s' % (element_type.value, date.strftime('%Y-%m-%d'))
+def fetch_config(servername, schoolname, element_type, date):
+    url = 'https://%s.webuntis.com/WebUntis/api/public/timetable/weekly/pageconfig' % servername
 
-    r = requests.get(url, cookies={'schoolname': '_' + base64.b64encode(schoolname.encode()).decode()})
+    r = requests.get(url, params={
+            'school': schoolname,
+            'type': element_type.value,
+            'date': date.strftime('%Y-%m-%d'),
+        })
     return r.json()['data']
 
-def fetch_periods(schoolname, grade_id, date):
-    url = 'https://neilo.webuntis.com/WebUntis/api/public/timetable/weekly/data?elementType=%d&elementId=%d&date=%s' % (ElementType.grade.value, grade_id, date.strftime('%Y-%m-%d'))
+def fetch_periods(servername, schoolname, grade_id, date):
+    url = 'https://%s.webuntis.com/WebUntis/api/public/timetable/weekly/data' % servername
 
-    r = requests.get(url, cookies={'schoolname': '_' + base64.b64encode(schoolname.encode()).decode()})
+    r = requests.get(url, params={
+            'school': schoolname,
+            'elementType': ElementType.grade.value,
+            'elementId': grade_id,
+            'date': date.strftime('%Y-%m-%d'),
+        })
     return r.json()['data']['result']
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Extract timetable information from WebUntis')
 
+    parser.add_argument('servername', help='name of the WebUntis server ([name].webuntis.com)')
     parser.add_argument('schoolname', help='name of the school')
     parser.add_argument('grade', help='name of the grade/class')
     parser.add_argument('-d', '--date', type=lambda s: datetime.strptime(s, '%Y-%m-%d').date(), default=datetime.now().date(),
@@ -151,28 +162,7 @@ def parse_args():
 
     return parser.parse_args()
 
-def main():
-    args = parse_args()
-
-    grades = fetch_config(args.schoolname, ElementType.grade, args.date)['elements']
-    grade_id = list(filter(lambda e: e['name'] == args.grade, grades))
-
-    if not grade_id:
-        raise ValueError('Specified grade not found')
-
-    grade_id = grade_id[0]['id']
-
-    data = fetch_periods(args.schoolname, grade_id, args.date)
-
-    elements = ElementRegistry()
-    for el in data['data']['elements']:
-        elements.addElement(el)
-
-    tt = Timetable()
-
-    for period in data['data']['elementPeriods'][str(grade_id)]:
-        tt.add_period(Period(period, elements))
-
+def output_table(tt):
     # dict of rows, first index is start time, second index is date, third index is irrelevant (for multiple periods per time slot)
     rows = {}
     for day in tt.days():
@@ -191,9 +181,40 @@ def main():
     rows_mangled = []
     for time in sorted(rows):
         indices.append(time.strftime('%H:%M'))
-        rows_mangled.append({day.strftime('%A'): '\n'.join([list(p.getElements(ElementType.subject))[0]['name'] for p in periods]) for day, periods in rows[time].items()})
+        # append a dict mapping day name to names of periods
+        rows_mangled.append({
+                day.strftime('%A'): '\n'.join([
+                    list(p.getElements(ElementType.subject))[0]['name']
+                    for p in periods
+                ])
+                for day, periods in rows[time].items()
+            })
 
     print(tabulate(rows_mangled, headers='keys', showindex=indices, tablefmt='grid'))
+
+def main():
+    args = parse_args()
+
+    grades = fetch_config(args.servername, args.schoolname, ElementType.grade, args.date)['elements']
+    grade_id = list(filter(lambda e: e['name'] == args.grade, grades))
+
+    if not grade_id:
+        raise ValueError('Specified grade not found')
+
+    grade_id = grade_id[0]['id']
+
+    data = fetch_periods(args.servername, args.schoolname, grade_id, args.date)
+
+    elements = ElementRegistry()
+    for el in data['data']['elements']:
+        elements.addElement(el)
+
+    tt = Timetable()
+
+    for period in data['data']['elementPeriods'][str(grade_id)]:
+        tt.add_period(Period(period, elements))
+
+    output_table(tt)
 
 if __name__ == '__main__':
     main()
