@@ -98,6 +98,18 @@ class Period():
                 ', '.join([e['name'] for e in self.getElements(ElementType.room)]),
             )
 
+    def pretty(self, shown_elements, terse=True):
+        els = []
+        for typ in shown_elements:
+            e = list(self.getElements(typ))
+            if e:
+                els += [e[0]['name' if terse else 'longName']]
+
+        if self.state == PeriodState.cancelled:
+            return strike(' - '.join(els))
+        else:
+            return ' - '.join(els)
+
 class Timegrid():
     Slot = collections.namedtuple('Slot', ['start', 'end'])
     Day  = collections.namedtuple('Day', ['label', 'first_slot', 'last_slot'])
@@ -155,31 +167,39 @@ class Timegrid():
 
 class Timetable():
     def __init__(self, timegrid):
-        self._days = collections.defaultdict(list)
+        self.days = collections.defaultdict(dict)
         self.timegrid = timegrid
 
     def periods(self):
         """Returns a timedate-sorted list of all periods in the timetable"""
         out = []
-        for day in self._days.values():
+        for day in self.days.values():
             out += day
 
         return sorted(out, key=lambda p: p.start)
 
     def add_period(self, period):
+        slot = period.slot()
+
         # check for alignment with Timegrid
-        if period.slot() not in self.timegrid.slots.values():
+        if slot not in self.timegrid.slots.values():
             raise ValueError('Period not in valid slot: %s' % (period.slot(),))
 
+        day = self.days[period.start.date()]
 
-        day = self._days[period.start.date()]
+        if slot not in day:
+            day[slot] = []
 
-        day.append(period)
-        day.sort(key=lambda p: p.start)
+        day[slot].append(period)
 
-    def days(self):
-        """Return a sorted list of days"""
-        return [self._days[d] for d in sorted(self._days)]
+    def days_sorted(self):
+        """Return a sorted list of (date, lessons) tuples"""
+        return [(d, self.days[d]) for d in sorted(self.days)]
+
+def strike(text):
+    #return '\u0336'.join(text) + '\u0336'
+    #return '\033[9m' + text + '\033[0m'
+    return text
 
 def fetch_timegrid(servername, schoolname):
     url = 'https://%s.webuntis.com/WebUntis/jsonrpc_web/jsonTimegridService' % servername
@@ -226,35 +246,32 @@ def parse_args():
 
     return parser.parse_args()
 
-def output_table(tt):
-    # dict of rows, first index is start time, second index is date, third index is irrelevant (for multiple periods per time slot)
-    rows = {}
-    for day in tt.days():
-        for p in day:
-            if p.start.time() not in rows:
-                rows[p.start.time()] = {}
-
-            row = rows[p.start.time()]
-
-            if p.start.date() not in row:
-                row[p.start.date()] = []
-
-            row[p.start.date()].append(p)
-
+def output_table(tt, shown_elements):
     indices = []
-    rows_mangled = []
-    for time in sorted(rows):
-        indices.append(time.strftime('%H:%M'))
-        # append a dict mapping day name to names of periods
-        rows_mangled.append({
-                day.strftime('%A'): '\n'.join([
-                    list(p.getElements(ElementType.subject))[0]['name']
-                    for p in periods
-                ])
-                for day, periods in rows[time].items()
-            })
+    rows = []
 
-    print(tabulate(rows_mangled, headers='keys', showindex=indices, tablefmt='grid'))
+    for slot in sorted(tt.timegrid.slots.values()):
+        indices.append('%s\n%s' % (
+                slot.start.strftime('%H:%M'),
+                slot.end.strftime('%H:%M'),
+            ))
+        row = {}
+        for date, periods in tt.days_sorted():
+            if slot in periods:
+                row[date.strftime('%A')] = '\n'.join(
+                        #list(p.getElements(ElementType.subject))[0]['name']
+                        p.pretty(shown_elements)
+                        for p in periods[slot]
+                    )
+
+        rows.append(row)
+
+    print(tabulate(rows, headers='keys', showindex=indices, tablefmt='fancy_grid'))
+
+def output_list(tt, shown_elements):
+    for date, periods in tt.days.items():
+        print(date)
+        print({s: ', '.join([p.pretty(shown_elements) for p in ps_in_s]) for s, ps_in_s in periods.items()})
 
 def main():
     args = parse_args()
@@ -283,7 +300,8 @@ def main():
     for period in data['data']['elementPeriods'][str(target_id)]:
         tt.add_period(Period(period, elements))
 
-    output_table(tt)
+    output_table(tt, [ElementType.subject, ElementType.teacher, ElementType.room])
+    #output_list(tt, [ElementType.subject, ElementType.teacher, ElementType.room])
 
 if __name__ == '__main__':
     main()
