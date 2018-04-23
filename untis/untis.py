@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 
 import requests
-import base64
 import json
 import argparse
+import collections
 from tabulate import tabulate
-from collections import defaultdict
 from enum import Enum, unique
 from datetime import date, datetime, timedelta
 
@@ -88,6 +87,9 @@ class Period():
 
         return self.elements.getAllOfType(t).values()
 
+    def slot(self):
+        return Timegrid.Slot(start=self.start.time(), end=self.end.time())
+
     def __str__(self):
         return '%s %s-%s: %s with %s in %s' % (
                 self.start.strftime('%d.%m.'), self.start.strftime('%H:%M'), self.end.strftime('%H:%M'),
@@ -96,9 +98,65 @@ class Period():
                 ', '.join([e['name'] for e in self.getElements(ElementType.room)]),
             )
 
+class Timegrid():
+    Slot = collections.namedtuple('Slot', ['start', 'end'])
+    Day  = collections.namedtuple('Day', ['label', 'first_slot', 'last_slot'])
+
+    def __init__(self, data):
+        """Initialize the timegrid from JSON data"""
+
+        self.slots = {}
+        self.days = []
+
+        for slot_data in data['units']:
+            slot_num = slot_data['number']
+            slot = self.Slot(
+                    start=datetime.strptime(str(slot_data['startTime']), '%H%M').time(),
+                    end=  datetime.strptime(str(slot_data['endTime']),   '%H%M').time(),
+                )
+
+            if slot.end <= slot.start:
+                raise ValueError('Slot times are wrong: starts at %(start)s, ends at %(end)s' % slot)
+
+            if slot_num-1 in self.slots:
+                prevslot = self.slots[slot_num-1]
+                if prevslot.end > slot.start:
+                    raise ValueError('Slot overlaps with previous (prev ends at %s, curr starts at %s)' % (prevslot.end, slot.start))
+
+            self.slots[slot_num] = slot
+
+        for day in data['days']:
+            day = self.Day(
+                    label=day['label'],
+                    first_slot=day['firstLesson'],
+                    last_slot=day['lastLesson'],
+                )
+
+            if day.first_slot == day.last_slot == 0:
+                continue
+
+            self.days.append(day)
+
+    def slots_on(self, day_spec):
+        """Return a list of time slots on a given day"""
+        if isinstance(day_spec, self.Day):
+            day = day_spec
+        elif isinstance(day_spec, str):
+            day = filter(lambda d: d.label == day_spec, self.days)
+            if not day:
+                raise ValueError('Day not found: %s' % day_spec)
+
+            day = day[0]
+        else:
+            day = self_days[day_spec]
+
+        return [self.slots[s] for s in range(day.first_slot, day.last_slot)]
+
+
 class Timetable():
-    def __init__(self):
-        self._days = defaultdict(list)
+    def __init__(self, timegrid):
+        self._days = collections.defaultdict(list)
+        self.timegrid = timegrid
 
     def periods(self):
         """Returns a timedate-sorted list of all periods in the timetable"""
@@ -109,17 +167,10 @@ class Timetable():
         return sorted(out, key=lambda p: p.start)
 
     def add_period(self, period):
-        # check for overlap with existing periods
-        for other_p in self.periods():
-            if period.end <= other_p.start or other_p.end <= period.start:
-                # out of range or barely touching one side, both ok
-                continue
+        # check for alignment with Timegrid
+        if period.slot() not in self.timegrid.slots.values():
+            raise ValueError('Period not in valid slot: %s' % (period.slot(),))
 
-            if (period.start == other_p.start) and (period.end == other_p.end):
-                # exactly the same, also ok
-                continue
-
-            raise ValueError('Periods overlap weirdly: %s and %s' % (other_p, period))
 
         day = self._days[period.start.date()]
 
@@ -129,6 +180,17 @@ class Timetable():
     def days(self):
         """Return a sorted list of days"""
         return [self._days[d] for d in sorted(self._days)]
+
+def fetch_timegrid(servername, schoolname):
+    url = 'https://%s.webuntis.com/WebUntis/jsonrpc_web/jsonTimegridService' % servername
+
+    r = requests.post(url, params={'school': schoolname}, data=json.dumps({
+            'id': 0,
+            'method': 'getTimegrid',
+            'params': [3],
+            'jsonrpc': '2.0',
+        }))
+    return r.json()['result']
 
 def fetch_config(servername, schoolname, element_type, date):
     url = 'https://%s.webuntis.com/WebUntis/api/public/timetable/weekly/pageconfig' % servername
@@ -140,13 +202,13 @@ def fetch_config(servername, schoolname, element_type, date):
         })
     return r.json()['data']
 
-def fetch_periods(servername, schoolname, grade_id, date):
+def fetch_data(servername, schoolname, data_type, data_id, date):
     url = 'https://%s.webuntis.com/WebUntis/api/public/timetable/weekly/data' % servername
 
     r = requests.get(url, params={
             'school': schoolname,
-            'elementType': ElementType.grade.value,
-            'elementId': grade_id,
+            'elementType': data_type.value,
+            'elementId': data_id,
             'date': date.strftime('%Y-%m-%d'),
         })
     return r.json()['data']['result']
@@ -156,7 +218,9 @@ def parse_args():
 
     parser.add_argument('servername', help='name of the WebUntis server ([name].webuntis.com)')
     parser.add_argument('schoolname', help='name of the school')
-    parser.add_argument('grade', help='name of the grade/class')
+    parser.add_argument('-q', '--query', dest='query_type', choices=ElementType.__members__,
+            help='query for a given type')
+    parser.add_argument('name', help='name of the item to query')
     parser.add_argument('-d', '--date', type=lambda s: datetime.strptime(s, '%Y-%m-%d').date(), default=datetime.now().date(),
             help='show timetable for specific date (YYYY-MM-DD) instead of today')
 
@@ -195,23 +259,28 @@ def output_table(tt):
 def main():
     args = parse_args()
 
-    grades = fetch_config(args.servername, args.schoolname, ElementType.grade, args.date)['elements']
-    grade_id = list(filter(lambda e: e['name'] == args.grade, grades))
+    args.query_type = ElementType[args.query_type]
 
-    if not grade_id:
-        raise ValueError('Specified grade not found')
+    mappings = fetch_config(args.servername, args.schoolname, args.query_type, args.date)['elements']
+    target_id = list(filter(lambda e: e['name'] == args.name, mappings))
 
-    grade_id = grade_id[0]['id']
+    if not target_id:
+        raise ValueError('Specified target not found')
 
-    data = fetch_periods(args.servername, args.schoolname, grade_id, args.date)
+    target_id = target_id[0]['id']
+
+    data = fetch_data(args.servername, args.schoolname, args.query_type, target_id, args.date)
 
     elements = ElementRegistry()
     for el in data['data']['elements']:
         elements.addElement(el)
 
-    tt = Timetable()
+    tg = Timegrid(fetch_timegrid(args.servername, args.schoolname))
+    #print(tg.slots)
 
-    for period in data['data']['elementPeriods'][str(grade_id)]:
+    tt = Timetable(tg)
+
+    for period in data['data']['elementPeriods'][str(target_id)]:
         tt.add_period(Period(period, elements))
 
     output_table(tt)
