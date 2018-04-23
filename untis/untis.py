@@ -22,6 +22,7 @@ class PeriodState(Enum):
     exam = 'EXAM'
     shift = 'SHIFT'
     additional = 'ADDITIONAL'
+    substitution = 'SUBSTITUTION'
 
 class ElementRegistry():
     """
@@ -238,15 +239,20 @@ def parse_args():
 
     parser.add_argument('servername', help='name of the WebUntis server ([name].webuntis.com)')
     parser.add_argument('schoolname', help='name of the school')
-    parser.add_argument('-q', '--query', dest='query_type', choices=ElementType.__members__,
-            help='query for a given type')
-    parser.add_argument('name', help='name of the item to query')
+    parser.add_argument('type', choices=ElementType.__members__,
+            help='the type of element to look for')
     parser.add_argument('-d', '--date', type=lambda s: datetime.strptime(s, '%Y-%m-%d').date(), default=datetime.now().date(),
             help='show timetable for specific date (YYYY-MM-DD) instead of today')
 
+    actions = parser.add_mutually_exclusive_group()
+    actions.add_argument('-l', '--list', action='store_true',
+            help='list targets for the given type')
+    actions.add_argument('-q', '--query', dest='query_target',
+            help='query for a given target')
+
     return parser.parse_args()
 
-def output_table(tt, shown_elements):
+def output_tt_table(tt, shown_elements):
     indices = []
     rows = []
 
@@ -268,40 +274,51 @@ def output_table(tt, shown_elements):
 
     print(tabulate(rows, headers='keys', showindex=indices, tablefmt='fancy_grid'))
 
-def output_list(tt, shown_elements):
+def output_tt_list(tt, shown_elements):
     for date, periods in tt.days.items():
         print(date)
         print({s: ', '.join([p.pretty(shown_elements) for p in ps_in_s]) for s, ps_in_s in periods.items()})
 
+def output_target_list(config):
+    print('\n'.join(sorted(e['name'] for e in config)))
+
 def main():
     args = parse_args()
 
-    args.query_type = ElementType[args.query_type]
+    args.type = ElementType[args.type]
 
-    mappings = fetch_config(args.servername, args.schoolname, args.query_type, args.date)['elements']
-    target_id = list(filter(lambda e: e['name'] == args.name, mappings))
+    mappings = fetch_config(args.servername, args.schoolname, args.type, args.date)['elements']
 
-    if not target_id:
-        raise ValueError('Specified target not found')
+    if args.query_target:
+        target_id = list(filter(lambda e: e['name'] == args.query_target, mappings))
 
-    target_id = target_id[0]['id']
+        if not target_id:
+            raise ValueError('Specified target not found')
 
-    data = fetch_data(args.servername, args.schoolname, args.query_type, target_id, args.date)
+        target_id = target_id[0]['id']
 
-    elements = ElementRegistry()
-    for el in data['data']['elements']:
-        elements.addElement(el)
+        data = fetch_data(args.servername, args.schoolname, args.type, target_id, args.date)
 
-    tg = Timegrid(fetch_timegrid(args.servername, args.schoolname))
-    #print(tg.slots)
+        elements = ElementRegistry()
+        for el in data['data']['elements']:
+            elements.addElement(el)
 
-    tt = Timetable(tg)
+        tg = Timegrid(fetch_timegrid(args.servername, args.schoolname))
+        #print(tg.slots)
 
-    for period in data['data']['elementPeriods'][str(target_id)]:
-        tt.add_period(Period(period, elements))
+        tt = Timetable(tg)
 
-    output_table(tt, [ElementType.subject, ElementType.teacher, ElementType.room])
-    #output_list(tt, [ElementType.subject, ElementType.teacher, ElementType.room])
+        for period in data['data']['elementPeriods'][str(target_id)]:
+            tt.add_period(Period(period, elements))
+
+        shown_elements = [ElementType.subject, ElementType.teacher, ElementType.room if args.type == ElementType.grade else ElementType.grade]
+
+        output_tt_table(tt, shown_elements)
+        #output_tt_list(tt, shown_element)
+    elif args.list:
+        output_target_list(mappings)
+    else:
+        print('Action not supported!')
 
 if __name__ == '__main__':
     main()
