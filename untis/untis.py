@@ -23,6 +23,7 @@ class PeriodState(Enum):
     shift = 'SHIFT'
     additional = 'ADDITIONAL'
     substitution = 'SUBSTITUTION'
+    office_hour = 'OFFICEHOUR'
 
 class ElementRegistry():
     """
@@ -197,42 +198,98 @@ class Timetable():
         """Return a sorted list of (date, lessons) tuples"""
         return [(d, self.days[d]) for d in sorted(self.days)]
 
+class NotAuthenticatedError(Exception):
+    def __init__(self, message):
+        self.message = message
+
+class ConnectionInfo():
+    def __init__(self, servername, schoolname):
+        self.servername = servername
+        self.schoolname = schoolname
+        self.s = requests.Session()
+        self.base_url = 'https://%s.webuntis.com/WebUntis/' % self.servername
+
+    def get(self, url, base_url=None, **kwargs):
+        """Gets data from url relative to base_url and returns its JSON decoded form"""
+
+        if not base_url:
+            base_url = self.base_url
+
+        r = self.s.get(base_url + url, **kwargs)
+
+        j = r.json()
+        if 'isSessionTimeout' in j:
+            raise NotAuthenticatedError('missing required authentication')
+
+        return j
+
+    def post(self, url, base_url=None, **kwargs):
+        """Gets data from url relative to base_url and returns its JSON decoded form"""
+
+        if not base_url:
+            base_url = self.base_url
+
+        r = self.s.post(base_url + url, **kwargs)
+
+        j = r.json()
+        if 'isSessionTimeout' in j:
+            raise NotAuthenticatedError('missing required authentication')
+
+        return j
+
 def strike(text):
     #return '\u0336'.join(text) + '\u0336'
     #return '\033[9m' + text + '\033[0m'
     return text
 
-def fetch_timegrid(servername, schoolname):
-    url = 'https://%s.webuntis.com/WebUntis/jsonrpc_web/jsonTimegridService' % servername
+def fetch_timegrid(conn_info):
+    url = 'jsonrpc_web/jsonTimegridService'
 
-    r = requests.post(url, params={'school': schoolname}, data=json.dumps({
+    r = conn_info.post(url, params={'school': conn_info.schoolname}, data=json.dumps({
             'id': 0,
             'method': 'getTimegrid',
             'params': [3],
             'jsonrpc': '2.0',
         }))
-    return r.json()['result']
 
-def fetch_config(servername, schoolname, element_type, date):
-    url = 'https://%s.webuntis.com/WebUntis/api/public/timetable/weekly/pageconfig' % servername
+    return r['result']
 
-    r = requests.get(url, params={
-            'school': schoolname,
+def fetch_config(conn_info, element_type, date):
+    url = 'api/public/timetable/weekly/pageconfig'
+
+    r = conn_info.get(url, params={
+            'school': conn_info.schoolname,
             'type': element_type.value,
             'date': date.strftime('%Y-%m-%d'),
         })
-    return r.json()['data']
 
-def fetch_data(servername, schoolname, data_type, data_id, date):
-    url = 'https://%s.webuntis.com/WebUntis/api/public/timetable/weekly/data' % servername
+    return r['data']
 
-    r = requests.get(url, params={
-            'school': schoolname,
+def fetch_data(conn_info, data_type, data_id, date):
+    url = 'api/public/timetable/weekly/data'
+
+    r = conn_info.get(url, params={
+            'school': conn_info.schoolname,
             'elementType': data_type.value,
             'elementId': data_id,
             'date': date.strftime('%Y-%m-%d'),
         })
-    return r.json()['data']['result']
+    return r['data']['result']
+
+def authenticate(conn_info, user, password):
+    url = 'j_spring_security_check'
+
+    r = conn_info.post(url, headers={'Accept': 'application/json'}, data={
+            'school': conn_info.schoolname,
+            'j_username': user,
+            'j_password': password,
+        })
+
+    if r.get('state') == 'SUCCESS':
+        return True
+    else:
+        raise NotAuthenticatedError('authentication failed: %s' % r)
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Extract timetable information from WebUntis')
@@ -243,6 +300,10 @@ def parse_args():
             help='the type of element to look for')
     parser.add_argument('-d', '--date', type=lambda s: datetime.strptime(s, '%Y-%m-%d').date(), default=datetime.now().date(),
             help='show timetable for specific date (YYYY-MM-DD) instead of today')
+    parser.add_argument('-u', '--user', nargs=1,
+            help='the username to use for authentication')
+    parser.add_argument('-p', '--password', nargs=1,
+            help='the password to use for authentication')
 
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument('-l', '--list', action='store_true',
@@ -287,7 +348,12 @@ def main():
 
     args.type = ElementType[args.type]
 
-    mappings = fetch_config(args.servername, args.schoolname, args.type, args.date)['elements']
+    ci = ConnectionInfo(args.servername, args.schoolname)
+
+    if args.user:
+        authenticate(ci, args.user, args.password)
+
+    mappings = fetch_config(ci, args.type, args.date)['elements']
 
     if args.query_target:
         target_id = list(filter(lambda e: e['name'] == args.query_target, mappings))
@@ -297,13 +363,13 @@ def main():
 
         target_id = target_id[0]['id']
 
-        data = fetch_data(args.servername, args.schoolname, args.type, target_id, args.date)
+        data = fetch_data(ci, args.type, target_id, args.date)
 
         elements = ElementRegistry()
         for el in data['data']['elements']:
             elements.addElement(el)
 
-        tg = Timegrid(fetch_timegrid(args.servername, args.schoolname))
+        tg = Timegrid(fetch_timegrid(ci))
         #print(tg.slots)
 
         tt = Timetable(tg)
