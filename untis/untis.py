@@ -4,6 +4,7 @@ import requests
 import json
 import argparse
 import collections
+import functools
 from tabulate import tabulate
 from enum import Enum, unique
 from datetime import date, datetime, timedelta
@@ -23,7 +24,20 @@ class PeriodState(Enum):
     shift = 'SHIFT'
     additional = 'ADDITIONAL'
     substitution = 'SUBSTITUTION'
+    room_substitution = 'ROOMSUBSTITUTION'
     office_hour = 'OFFICEHOUR'
+
+class NotAuthenticatedError(Exception):
+    def __init__(self, message):
+        self.message = message
+
+class NotAlignedError(Exception):
+    def __init__(self, period):
+        super().__init__('period is not aligned: %s from %s to %s' % (
+                period.start.date(),
+                period.start.time(),
+                period.end.time()
+            ))
 
 class ElementRegistry():
     """
@@ -53,6 +67,7 @@ class ElementRegistry():
         return self.elements[type_]
 
 
+@functools.total_ordering
 class Period():
     def __init__(self, data, extraEls):
         """
@@ -62,15 +77,17 @@ class Period():
         """
 
         day = datetime.strptime(str(data['date']), '%Y%m%d').date()
-        self.start = datetime.combine(day,
-                datetime.strptime(str(data['startTime']), '%H%M').time()
+        self.start = datetime.combine(
+                day,
+                datetime.strptime(str(data['startTime']).zfill(4), '%H%M').time()
             )
-        self.end = datetime.combine(day,
-                datetime.strptime(str(data['endTime']), '%H%M').time()
+        self.end = datetime.combine(
+                day,
+                datetime.strptime(str(data['endTime']).zfill(0), '%H%M').time()
             )
 
-        if self.end - self.start not in [timedelta(minutes=m) for m in [45, 50]]:
-            raise ValueError('Expected period to be 45 or 50 minutes, is %s (from %s to %s)' % (
+        if self.end - self.start <= timedelta(0):
+            raise ValueError('bad period time: is %s (from %s to %s)' % (
                 self.end-self.start, self.start.strftime('%H:%M'), self.end.strftime('%H:%M')))
 
         self.state = PeriodState(data['cellState'])
@@ -111,6 +128,12 @@ class Period():
             return strike(' - '.join(els))
         else:
             return ' - '.join(els)
+
+    def __lt__(self, other):
+        return self.start < other.start
+
+    def __eq__(self, other):
+        return self.start == other.start
 
 class Timegrid():
     Slot = collections.namedtuple('Slot', ['start', 'end'])
@@ -168,9 +191,8 @@ class Timegrid():
 
 
 class Timetable():
-    def __init__(self, timegrid):
-        self.days = collections.defaultdict(dict)
-        self.timegrid = timegrid
+    def __init__(self):
+        self.days = collections.defaultdict(list)
 
     def periods(self):
         """Returns a timedate-sorted list of all periods in the timetable"""
@@ -181,26 +203,32 @@ class Timetable():
         return sorted(out, key=lambda p: p.start)
 
     def add_period(self, period):
-        slot = period.slot()
-
-        # check for alignment with Timegrid
-        if slot not in self.timegrid.slots.values():
-            raise ValueError('Period not in valid slot: %s' % (period.slot(),))
-
         day = self.days[period.start.date()]
 
-        if slot not in day:
-            day[slot] = []
-
-        day[slot].append(period)
+        day.append(period)
 
     def days_sorted(self):
         """Return a sorted list of (date, lessons) tuples"""
         return [(d, self.days[d]) for d in sorted(self.days)]
 
-class NotAuthenticatedError(Exception):
-    def __init__(self, message):
-        self.message = message
+    def grid_aligned(self, timegrid):
+        """Return dict of {date:{slot:[periods]}}, with each slot contained in the timegrid, raises NotAlignedError if impossible"""
+        out = collections.defaultdict(dict)
+        for date, periods in self.days.items():
+            day = out[date]
+            for p in periods:
+                slot = p.slot()
+
+                # check for alignment with Timegrid
+                if slot not in timegrid.slots.values():
+                    raise NotAlignedError(p)
+
+                if slot not in day:
+                    day[slot] = []
+
+                day[slot].append(p)
+
+        return out
 
 class ConnectionInfo():
     def __init__(self, servername, schoolname):
@@ -274,6 +302,7 @@ def fetch_data(conn_info, data_type, data_id, date):
             'elementId': data_id,
             'date': date.strftime('%Y-%m-%d'),
         })
+
     return r['data']['result']
 
 def authenticate(conn_info, user, password):
@@ -300,9 +329,9 @@ def parse_args():
             help='the type of element to look for')
     parser.add_argument('-d', '--date', type=lambda s: datetime.strptime(s, '%Y-%m-%d').date(), default=datetime.now().date(),
             help='show timetable for specific date (YYYY-MM-DD) instead of today')
-    parser.add_argument('-u', '--user', nargs=1,
+    parser.add_argument('-u', '--user',
             help='the username to use for authentication')
-    parser.add_argument('-p', '--password', nargs=1,
+    parser.add_argument('-p', '--password',
             help='the password to use for authentication')
 
     actions = parser.add_mutually_exclusive_group()
@@ -313,20 +342,21 @@ def parse_args():
 
     return parser.parse_args()
 
-def output_tt_table(tt, shown_elements):
+def output_tt_table(tt, timegrid, shown_elements):
     indices = []
     rows = []
 
-    for slot in sorted(tt.timegrid.slots.values()):
+    days = tt.grid_aligned(timegrid)
+
+    for slot in sorted(timegrid.slots.values()):
         indices.append('%s\n%s' % (
                 slot.start.strftime('%H:%M'),
                 slot.end.strftime('%H:%M'),
             ))
         row = {}
-        for date, periods in tt.days_sorted():
+        for date, periods in sorted(days.items()):
             if slot in periods:
                 row[date.strftime('%A')] = '\n'.join(
-                        #list(p.getElements(ElementType.subject))[0]['name']
                         p.pretty(shown_elements)
                         for p in periods[slot]
                     )
@@ -336,9 +366,9 @@ def output_tt_table(tt, shown_elements):
     print(tabulate(rows, headers='keys', showindex=indices, tablefmt='fancy_grid'))
 
 def output_tt_list(tt, shown_elements):
-    for date, periods in tt.days.items():
+    for date, periods in sorted(tt.days.items()):
         print(date)
-        print({s: ', '.join([p.pretty(shown_elements) for p in ps_in_s]) for s, ps_in_s in periods.items()})
+        print({p.slot(): p.pretty(shown_elements) for p in sorted(periods)})
 
 def output_target_list(config):
     print('\n'.join(sorted(e['name'] for e in config)))
@@ -353,9 +383,11 @@ def main():
     if args.user:
         authenticate(ci, args.user, args.password)
 
+    # fetch id listings for the requested type
     mappings = fetch_config(ci, args.type, args.date)['elements']
 
     if args.query_target:
+        # find the target's id from the mapping
         target_id = list(filter(lambda e: e['name'] == args.query_target, mappings))
 
         if not target_id:
@@ -363,25 +395,33 @@ def main():
 
         target_id = target_id[0]['id']
 
+        # get all timetable data for the type/id pair
         data = fetch_data(ci, args.type, target_id, args.date)
 
+        # populate element registry
         elements = ElementRegistry()
+
         for el in data['data']['elements']:
             elements.addElement(el)
 
-        tg = Timegrid(fetch_timegrid(ci))
-        #print(tg.slots)
-
-        tt = Timetable(tg)
+        # populate timetable
+        tt = Timetable()
 
         for period in data['data']['elementPeriods'][str(target_id)]:
             tt.add_period(Period(period, elements))
 
         shown_elements = [ElementType.subject, ElementType.teacher, ElementType.room if args.type == ElementType.grade else ElementType.grade]
 
-        output_tt_table(tt, shown_elements)
-        #output_tt_list(tt, shown_element)
+        tg = Timegrid(fetch_timegrid(ci))
+        try:
+            output_tt_table(tt, tg, shown_elements)
+        except NotAlignedError as e:
+            print('Lessons are not aligned to grid, printing as list instead (%s)' % e)
+            print('Slots:')
+            print(tg.slots)
+            output_tt_list(tt, shown_elements)
     elif args.list:
+        # just list the possible targets
         output_target_list(mappings)
     else:
         print('Action not supported!')
