@@ -3,8 +3,8 @@
 import argparse
 import sys
 from enum import Enum
-import re
-from io import StringIO
+from io import TextIOBase, StringIO
+from collections import defaultdict
 
 """
 for https://www.codewars.com/kata/whitespace-interpreter
@@ -164,7 +164,9 @@ class Instruction(Enum):
 def clean(program):
     """strips everything but space/tab/newline, replaces them with s/t/n"""
 
-    return re.sub(r'[^ \t\n]', '', program).translate(str.maketrans(' \t\n', 'stn'))
+    return program.translate(defaultdict(str,
+            str.maketrans(zip(' \t\n', 'stn'))
+        ))
 
 def consume_any(code, choices, offset=0):
     """
@@ -225,7 +227,7 @@ def consume_label(code, offset=0):
 def parse(code):
     """
     takes string of s/t/n
-    returns Program()
+    returns Program
     """
 
     prog = Program()
@@ -252,7 +254,7 @@ def parse(code):
     return prog
 
 def run(program, inp, output):
-    """takes Program(), input and output TextIO"""
+    """takes Program, input and output TextIO"""
 
     stack = []
     call_stack = []
@@ -301,7 +303,7 @@ def run(program, inp, output):
             elif ins == Instruction.mod:
                 stack.append(b%a)
             else:
-                raise ValueError('Unknown arithmetic operation')
+                raise ValueError('unknown arithmetic operation')
         elif ins == Instruction.store:
             a = stack.pop()
             b = stack.pop()
@@ -350,6 +352,33 @@ def run(program, inp, output):
 
     raise ValueError('execution loop exited, something went terribly wrong')
 
+def execute(code, inp=None, is_cleaned=False):
+    """
+    execute whitespace code, with optional input
+
+    inp: TextIO or string to act as input for the program
+    is_cleaned: input consists of s/t/n characters already
+
+    returns: the produced output string
+    """
+
+    if is_cleaned:
+        # make sure we still filter out any trailing newlines etc
+        code = code.translate(defaultdict(str, str.maketrans({c: c for c in 'stn'})))
+    else:
+        code = clean(code)
+
+    if isinstance(inp, str):
+        inp = StringIO(inp)
+    elif not isinstance(inp, TextIOBase):
+        raise ValueError('unable to convert input %r to TextIO' % (inp,))
+
+    output = StringIO()
+
+    run(parse(code), inp, output)
+
+    return output.getvalue()
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Run a whitespace program')
 
@@ -365,10 +394,9 @@ if __name__ == '__main__':
     with args.infile as f:
         code = f.read()
 
-    if not args.no_clean:
-        code = clean(code)
+    output = execute(code, sys.stdin, args.no_clean)
 
-    program = parse(code)
-    run(program, sys.stdin, args.output)
+    args.output.write(output)
+
     if args.output.isatty():
         args.output.write('\n')
