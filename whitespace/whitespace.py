@@ -15,9 +15,13 @@ characters are represented as:
 """
 
 class Command:
+    """an 'instance' of an Instruction, with payload"""
+
     def __init__(self, ins, number=None, label=None):
         """
         ins: the Instruction()
+        number: the number argument (necessary depending on ins)
+        label: the label argument (necessary depending on ins)
         """
 
         self.ins = ins
@@ -30,38 +34,36 @@ class Command:
         self.label = label
 
     def __str__(self):
-        return '{%s.%s(%s) (number=%r, label=%s)}' % (self.imp.name, self.ins.name, self.ins.value, self.number, self.label)
-
-    def beautiful(self):
         return self.ins.name + (' ' + str(self.number) if self.number is not None else '') + (' %r' % str(self.label) if self.label is not None else '')
 
     def __repr__(self):
         return 'Command(%r, %r, %r)' % (self.ins, self.number, self.label)
 
 class Program:
-    """class that saves commands and regulates flow"""
+    """class that saves commands and regulates program flow"""
 
-    commands = []
-    labels = {}
-    pc = 0
-    call_stack = []
+    def __init__(self):
+        self.commands = []
+        self.labels = {}
+        self.pc = 0
+        self.call_stack = []
 
     def jump(self, label):
-        """
-        jump execution to a given label
-        """
+        """jump execution to a given label"""
+
         if label not in self.labels:
             raise ValueError('tried to jump to nonexistent label: %r' % (label,))
 
         self.pc = self.labels[label]
 
     def advance(self):
-        """
-        advance the pc by 1
-        """
+        """advance the program counter by 1"""
+
         self.pc += 1
 
     def add_command(self, cmd):
+        """adds a command to the program. Handles label markers"""
+
         if cmd.ins == Instruction.mark:
             if cmd.label in self.labels:
                 raise ValueError('tried to redefine label')
@@ -70,9 +72,7 @@ class Program:
             self.commands.append(cmd)
 
     def get_command(self):
-        """
-        return the command at the current pc
-        """
+        """return the command at the current pc"""
 
         if self.pc >= len(self.commands):
             raise ValueError('unexpected end of program')
@@ -80,6 +80,7 @@ class Program:
 
     def call(self, label):
         """jump to label and store the return address"""
+
         self.call_stack.append(self.pc)
         self.jump(label)
 
@@ -89,7 +90,7 @@ class Program:
         self.pc = self.call_stack.pop()
 
     def __str__(self):
-        out = ['\t' + cmd.beautiful() for cmd in self.commands]
+        out = ['\t' + str(cmd) for cmd in self.commands]
         for label, pos in self.labels.items():
             out.insert(pos, label + ':')
 
@@ -103,6 +104,19 @@ class IMP(Enum):
     flow = 'n'
 
 class Instruction(Enum):
+    """
+    All individual instructions.
+    initialization:
+        code of the instruction, with optional '_n'/'_l' suffix if number/label argument is required
+    items of each:
+        name: the name of the instruction
+        imp: the associated IMP
+        code: the code of the instruction itself (without IMP)
+        value: the code of the instruction including IMP code
+        takes_number: true if the instruction requires a number argument
+        takes_label: true if the instruction requires a label argument
+    """
+
     push = (IMP.stack, 's_n')
     dup_n = (IMP.stack, 'ts_n')
     discard_n = (IMP.stack, 'tn_n')
@@ -148,16 +162,25 @@ class Instruction(Enum):
         return obj
 
 def clean(program):
-    """
-    strips everything but space/tab/newline, replaces them with s/t/n
-    """
+    """strips everything but space/tab/newline, replaces them with s/t/n"""
 
     return re.sub(r'[^ \t\n]', '', program).translate(str.maketrans(' \t\n', 'stn'))
 
 def consume_any(code, choices, offset=0):
     """
-    seek in code until a match in choices is found
-    return (match, position after match)
+    seek from position 'offset' of code until a match in choices is found
+    return (matched choice, position after match)
+
+    >>> whitespace.consume_any('abcdef', ['bcd', 'ab', 'a'], 0)
+    ('a', 1)
+    >>> whitespace.consume_any('abcdef', ['bcd', 'ab', 'a'], 1)
+    ('bcd', 4)
+    >>> whitespace.consume_any('abcdef', ['bcd', 'ab', 'a'], 4)
+    Traceback (most recent call last):
+      File "<stdin>", line 1, in <module>
+      File "whitespace.py", line 185, in consume_any
+        raise ValueError('no match found in %r for %r' % (code_part, choices))
+    ValueError: no match found in 'ef' for ['bcd', 'ab', 'a']
     """
 
     if len(code) <= offset:
@@ -174,6 +197,11 @@ def consume_any(code, choices, offset=0):
     raise ValueError('no match found in %r for %r' % (code_part, choices))
 
 def consume_number(code, offset=0):
+    """
+    seek from position 'offset' of code until a complete whitespace number is formed
+    returns: (found number, position after terminal character)
+    """
+
     terminal = code.find('n', offset)
     if terminal == offset:
         raise ValueError('empty number (only terminal, no sign)')
@@ -181,24 +209,24 @@ def consume_number(code, offset=0):
         return 0, terminal+1
 
     sign = {'t': -1, 's': 1}[code[offset]]
+    bits = code[offset+1:terminal].translate(str.maketrans('st', '01'))
 
-    return sign * int(code[offset+1:terminal].translate(str.maketrans('st', '01')), 2), terminal+1
+    return sign * int(bits, 2), terminal+1
 
 def consume_label(code, offset=0):
+    """
+    seek from position 'offset' of code until a complete whitespace label is formed
+    returns: (found label, position after terminal character)
+    """
     terminal = code.find('n', offset)
 
-    return code[offset+1:terminal], terminal+1
+    return code[offset:terminal], terminal+1
 
 def parse(code):
     """
     takes string of s/t/n
     returns Program()
     """
-
-    imp_ins_map = {imp: [] for imp in IMP}
-
-    for ins in Instruction:
-        imp_ins_map[ins.imp].append(ins)
 
     prog = Program()
 
@@ -224,9 +252,7 @@ def parse(code):
     return prog
 
 def run(program, inp, output):
-    """
-    takes Program(), input and output TextIO
-    """
+    """takes Program(), input and output TextIO"""
 
     stack = []
     call_stack = []
@@ -330,7 +356,7 @@ if __name__ == '__main__':
     parser.add_argument('infile', metavar='program', type=argparse.FileType('r'),
                         help='the brainfuck program to run')
     parser.add_argument('-n', '--no-clean', action='store_true',
-                        help='indicates that the given file already contains cleaned code (only s/t/n characters)')
+                        help='use this if the given file already contains cleaned code (only s/t/n characters)')
     parser.add_argument('-o', '--output', metavar='outfile', nargs=1, type=argparse.FileType('w'), default=sys.stdout,
                         help='file to write the output to')
 
@@ -342,10 +368,7 @@ if __name__ == '__main__':
     if not args.no_clean:
         code = clean(code)
 
-    print('after clean:', code)
     program = parse(code)
-    print('after parse:', program)
     run(program, sys.stdin, args.output)
     if args.output.isatty():
         args.output.write('\n')
-
